@@ -27,6 +27,9 @@
 #include <atomic>
 #include <type_traits>
 
+#include <malloc.h>
+#include <iostream>
+
 using namespace std;
 
 #if defined(_ISOC11_SOURCE)
@@ -89,6 +92,11 @@ HOOK(aligned_alloc);
 #endif
 HOOK(dlopen);
 HOOK(dlclose);
+// these are in malloc.h
+//HOOK(pvalloc);
+//HOOK(memalign);
+
+//struct new_t : public hook<decltype(&::new), new_t> { static constexpr const char* identifier = "operator new"; } mynew;
 
 #pragma GCC diagnostic pop
 #undef HOOK
@@ -157,6 +165,8 @@ void init()
 #if HAVE_ALIGNED_ALLOC
                        hooks::aligned_alloc.init();
 #endif
+                       //hooks::pvalloc.init();
+                       //hooks::memalign.init();
 
                        // cleanup environment to prevent tracing of child apps
                        unsetenv("LD_PRELOAD");
@@ -165,6 +175,94 @@ void init()
                    nullptr, nullptr);
 }
 }
+}
+
+void* operator new(size_t size) 
+{
+    if (!hooks::malloc) {
+        hooks::init();
+    }
+
+    void* ptr = hooks::malloc(size);
+    heaptrack_malloc(ptr, size);
+    return ptr;
+}
+
+void operator delete(void* ptr) 
+{
+    if (!hooks::free) {
+        hooks::init();
+    }
+
+    if (hooks::dummyPool().isDummyAllocation(ptr)) {
+        return;
+    }
+
+    // call handler before handing over the real free implementation
+    // to ensure the ptr is not reused in-between and thus the output
+    // stays consistent
+    heaptrack_free(ptr);
+
+    hooks::free(ptr);
+}
+
+void operator delete(void* ptr, size_t s) 
+{
+    if (!hooks::free) {
+        hooks::init();
+    }
+
+    if (hooks::dummyPool().isDummyAllocation(ptr)) {
+        return;
+    }
+
+    // call handler before handing over the real free implementation
+    // to ensure the ptr is not reused in-between and thus the output
+    // stays consistent
+    heaptrack_free(ptr);
+
+    hooks::free(ptr);
+}
+
+void* operator new[](size_t size)
+{
+    if (!hooks::malloc) {
+        hooks::init();
+    }
+
+    void* ptr = hooks::malloc(size);
+    heaptrack_malloc(ptr, size);
+    return ptr;
+}
+
+void operator delete[](void* ptr)
+{
+    if (!hooks::free) {
+        hooks::init();
+    }
+
+    if (hooks::dummyPool().isDummyAllocation(ptr)) {
+        return;
+    }
+
+    heaptrack_free(ptr);
+
+    hooks::free(ptr);
+}
+
+void operator delete[] (void* ptr, size_t s) 
+{
+    if (!hooks::free) {
+        hooks::init();
+    }
+
+    if (hooks::dummyPool().isDummyAllocation(ptr)) {
+        return;
+    }
+
+    heaptrack_free(ptr);
+
+    hooks::free(ptr);
 }
 
 extern "C" {
@@ -294,6 +392,38 @@ void* valloc(size_t size) noexcept
 
     return ret;
 }
+
+#if 0
+void* pvalloc(size_t size) noexcept
+{
+    if (!hooks::pvalloc) {
+        hooks::init();
+    }
+
+    void* ret = hooks::pvalloc(size);
+
+    if (ret) {
+        heaptrack_malloc(ret, size);
+    }
+
+    return ret;
+}
+
+void* memalign(size_t alignment, size_t size) noexcept
+{
+    if (!hooks::memalign) {
+        hooks::init();
+    }
+
+    void* ret = hooks::memalign(alignment, size);
+
+    if (!ret) {
+        heaptrack_malloc(ret, size);
+    }
+
+    return ret;
+}
+#endif
 
 void* dlopen(const char* filename, int flag) noexcept
 {
